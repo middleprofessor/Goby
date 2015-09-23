@@ -1,0 +1,604 @@
+% scripts to analyze Goby fast start behavioral and performance data. Gobies were startled in a flow tunnel under some combination of a 1) Flow Level and 2) Stimulus Direction. Flow Level has three levels (zero cm/s, xxx cm/s, xxx cm/s). Stimulus Direciton has three levels (cranial, lateral, caudal)
+
+% Created by Jeffrey A. Walker
+
+% Created Sept 7, 2015
+% Started with scripts in "goby_analysis.old.R", created August 18, 2015
+% note that I used "front", "side", "back" in place of "cranial", "lateral", "caudal" when working with "goby_analysis.old.R" but modified to Kelly's usage on 9/7/15
+
+\documentclass{article}
+
+\begin{document}
+
+\section{Load libraries}
+The main data libraries are data.table and ggplot2
+<< libraries >>=
+library(data.table)
+library(ggplot2)
+library(gridExtra) #grid.arrange
+library(doBy)
+library(lsmeans) # lsmeans
+library(car) # Anova (type III ss)
+library(pscl) # R^2 for glm
+@
+
+\section{Create working data.table}
+\subsection{Pre-processing steps}
+\begin{enumerate}
+\item Saved the sheet "overall" in the .xlxs file "Goby lab notebook 18August15_cleaned up.xlsx" to a tab-delimited text file "goby_data.txt".
+\item Two values in the Fineness Ratio column contained '#DIV/0!' - these were changed to NA.
+\item The missing values were left as is (not changed to NA).
+\item The column headers were changed to "ID  Response	Escape_Angle	Attack_Angle	Flow	Direction	Fineness	Vel_max	Accel_max"
+\end{enumerate}
+
+\subsection{Read and clean data}
+<< Read and clean data >>=
+
+write_it <- FALSE # write clean data to file?
+# read in text file, add columns, and sort factor levels. 
+fn <- 'goby_data.txt'
+goby <- data.table(read.table(fn,header=TRUE,sep='\t'))
+
+# substitute meaningful factor level labels. The order must correspond to the coding in the columns 'Flow' and 'Direction' in the text file, which is albetical order.
+flow_levels <- c('none','low','high') # these must be in the order
+stimulus_direction_levels <- c('caudal','cranial','lateral')
+goby[,Flow_Level:=factor(flow_levels[Flow])]
+goby[,Stimulus_Direction:=factor(stimulus_direction_levels[Direction])]
+
+# reorder factor levels
+new_order <- c(which(levels(goby[,Stimulus_Direction])=='cranial'),
+               which(levels(goby[,Stimulus_Direction])=='lateral'),
+               which(levels(goby[,Stimulus_Direction])=='caudal'))
+goby[,Stimulus_Direction:=factor(Stimulus_Direction,levels(Stimulus_Direction)[new_order])]
+
+new_order <- c(which(levels(goby[,Flow_Level])=='none'),
+               which(levels(goby[,Flow_Level])=='low'),
+               which(levels(goby[,Flow_Level])=='high'))
+goby[,Flow_Level:=factor(Flow_Level,levels(Flow_Level)[new_order])]
+if(write_it==TRUE){
+  fn.out <- 'goby_data_clean.txt'
+  write.table(goby,fn.out,sep='\t',row.names=FALSE,quote=FALSE) 
+}
+
+
+@
+
+Common functions for analyzing the different variables need to be run
+<< Analysis functions >>=
+expit <- function(x) {exp(x)/(1+exp(x))} # the inverse logit function. This generates the probability of the event p
+
+all_models_lm <- function(sub_goby,logistic=FALSE){
+  # sub_goby contains the Y variable in column 'Y'. This could be Response, Escape Angle, Max Vel, Max Accel
+  # if logistic=TRUE then use GLM
+  
+  options(contrasts=c("contr.treatment", "contr.poly"))
+  # 3 variable models
+  model1 <- lm(Y~FL*SD*FR, data=sub_goby)
+  model2 <- lm(Y~FL*SD*FR - FL:SD:FR, data=sub_goby)
+  model2b <- lm(Y~SD*FL*FR - SD:FL:FR, data=sub_goby)
+  model3a <- lm(Y~FL*SD + FL*FR, data=sub_goby)
+  model3b <- lm(Y~SD*FL + SD*FR, data=sub_goby)
+  model3c <- lm(Y~FR*FL + FR*SD, data=sub_goby)
+  model4a <- lm(Y~FR+FL*SD, data=sub_goby)
+  model4b <- lm(Y~FL+SD*FR, data=sub_goby)
+  model4c <- lm(Y~SD+FL*FR, data=sub_goby)
+  model5 <- lm(Y~FL+SD+FR, data=sub_goby)
+  
+  # 2 variable models
+  model6 <- lm(Y~FL*SD, data=sub_goby)
+  model7 <- lm(Y~FL+SD, data=sub_goby)
+  
+  model8 <- lm(Y~FL*FR, data=sub_goby)
+  model9 <- lm(Y~FL+FR, data=sub_goby)
+  
+  model10 <- lm(Y~SD*FR, data=sub_goby)
+  model11 <- lm(Y~SD+FR, data=sub_goby)
+  
+  # single variable models
+  model12 <- lm(Y~SD, data=sub_goby)
+  model13 <- lm(Y~FL, data=sub_goby)
+  model14 <- lm(Y~FR, data=sub_goby)
+  
+  mlist <- list(model1,model2,model3a,model3b,model3c,model4a,model4b,model4c,model5,model6,model7,model8,model9,model10,model11,model12,model13,model14)
+  # get formula of each model
+  model <- NULL
+  for(i in 1:length(mlist)){
+    vars <- row.names(anova(mlist[[i]]))
+    vars <- vars[-length(vars)]
+    new_model <- vars[1]
+    if(length(vars) > 1){
+      for(j in 2:length(vars)){new_model<-paste(new_model,vars[j],sep=' + ')}
+    }
+    model <- c(model,new_model)
+  }
+  
+  # get AIC. Note that AIC() returns a different value than extractAIC() but only by a constant so compared to minimum this is the same
+  aic <- unlist(lapply(mlist,AIC))
+  aic_rel <- aic-min(aic)
+  
+  # get adjusted R squared
+  rsqr <- numeric(length(aic))
+  for(i in 1:length(rsqr)){rsqr[i] <- summary(mlist[[i]])$adj.r.squared}
+  
+  # get P-value for last term in model
+  pvalue <- numeric(length(aic))
+  for(i in 1:length(pvalue)){
+    plist <- anova(mlist[[i]])$Pr
+    pvalue[i] <- plist[length(plist)-1]
+  }
+  
+  # make output table
+  my_table <- data.table(model=model,delta_AIC=round(aic_rel,1),adj_R2=round(rsqr,3),p_value=round(pvalue,3))
+  my_table <- orderBy(~delta_AIC,my_table)
+  
+  return(my_table)
+}
+
+all_models_glm <- function(sub_goby,logistic=FALSE){
+  # sub_goby contains the Y variable in column 'Y'. This could be Response, Escape Angle, Max Vel, Max Accel
+  # if logistic=TRUE then use GLM
+  
+  options(contrasts=c("contr.treatment", "contr.poly"))
+  # 3 variable models
+  null_mod <- glm(Y~1, family=binomial(link='logit'), data=sub_goby)
+
+  model1 <- glm(Y~FL*SD*FR, family=binomial(link='logit'), data=sub_goby)
+  model2 <- glm(Y~FL*SD*FR - FL:SD:FR, family=binomial(link='logit'), data=sub_goby)
+  model2b <- glm(Y~SD*FL*FR - SD:FL:FR, family=binomial(link='logit'), data=sub_goby)
+  model3a <- glm(Y~FL*SD + FL*FR, family=binomial(link='logit'), data=sub_goby)
+  model3b <- glm(Y~SD*FL + SD*FR, family=binomial(link='logit'), data=sub_goby)
+  model3c <- glm(Y~FR*FL + FR*SD, family=binomial(link='logit'), data=sub_goby)
+  model4a <- glm(Y~FR+FL*SD, family=binomial(link='logit'), data=sub_goby)
+  model4b <- glm(Y~FL+SD*FR, family=binomial(link='logit'), data=sub_goby)
+  model4c <- glm(Y~SD+FL*FR, family=binomial(link='logit'), data=sub_goby)
+  model5 <- glm(Y~FL+SD+FR, family=binomial(link='logit'), data=sub_goby)
+  
+  # 2 variable models
+  model6 <- glm(Y~FL*SD, family=binomial(link='logit'), data=sub_goby)
+  model7 <- glm(Y~FL+SD, family=binomial(link='logit'), data=sub_goby)
+  
+  model8 <- glm(Y~FL*FR, family=binomial(link='logit'), data=sub_goby)
+  model9 <- glm(Y~FL+FR, family=binomial(link='logit'), data=sub_goby)
+  
+  model10 <- glm(Y~SD*FR, family=binomial(link='logit'), data=sub_goby)
+  model11 <- glm(Y~SD+FR, family=binomial(link='logit'), data=sub_goby)
+  
+  # single variable models
+  model12 <- glm(Y~SD, family=binomial(link='logit'), data=sub_goby)
+  model13 <- glm(Y~FL, family=binomial(link='logit'), data=sub_goby)
+  model14 <- glm(Y~FR, family=binomial(link='logit'), data=sub_goby)
+  
+  mlist <- list(model1,model2,model3a,model3b,model3c,model4a,model4b,model4c,model5,model6,model7,model8,model9,model10,model11,model12,model13,model14)
+  # get formula of each model
+  model <- NULL
+  for(i in 1:length(mlist)){
+    vars <- row.names(anova(mlist[[i]]))[-1] # differs from anova(lm)
+    # vars <- vars[-length(vars)] # differs from anova(lm)
+    new_model <- vars[1]
+    if(length(vars) > 1){
+      for(j in 2:length(vars)){new_model<-paste(new_model,vars[j],sep=' + ')}
+    }
+    model <- c(model,new_model)
+  }
+  
+  # get AIC. Note that AIC() returns a different value than extractAIC() but only by a constant so compared to minimum this is the same
+  aic <- unlist(lapply(mlist,AIC))
+  aic_rel <- aic-min(aic)
+  
+  # get R squared
+  rsqr <- numeric(length(aic))
+  adj_rsqr <- numeric(length(aic))
+  for(i in 1:length(rsqr)){
+    yhat <- expit(predict(mlist[[i]]))
+    # rsqr[i] <- mean(yhat[which(sub_goby[,Y]==1)]) - mean(yhat[which(sub_goby[,Y]==0)]) # Tjur method
+    rsqr[i] <- pR2(mlist[[i]])['McFadden'] # McFadden's R2
+    # compute adjusted McFadden's
+    k <- extractAIC(mlist[[i]])[1]
+    adj_rsqr[i] <- (1-(logLik(mlist[[i]])-k)/logLik(null_mod))[1]
+  }
+  
+  # get P-value for last term in model
+  pvalue <- numeric(length(aic))
+  for(i in 1:length(pvalue)){
+    plist <- anova(mlist[[i]],test="Chisq")$Pr
+    pvalue[i] <- plist[length(plist)]
+  }
+  
+  # make output table
+  my_table <- data.table(model=model,delta_AIC=round(aic_rel,1),R2=round(rsqr,3),adj_R2=round(adj_rsqr,3),p_value=round(pvalue,3))
+  my_table <- orderBy(~delta_AIC,my_table)
+  
+  return(my_table)
+}
+
+@
+
+\section{Analysis}
+\subsection{Analyze the frequency of the response to the stimulus}
+
+First, subset the data to that with no missing values for the relevant variables, including Fineness Ratio.
+
+<< Analyze Response>>=
+sub_goby <- na.omit(goby[,list(Response,Stimulus_Direction,Flow_Level,Fineness)])
+full_names <- colnames(sub_goby)
+short_names <- c('Y','SD','FL','FR') # make sure in same order as full_names!
+@
+
+First create a table of the frequency of response by class
+<<>>=
+# table of frequency of response by class. Response must be numeric
+sub_goby[,Response:=as.numeric(as.character(Response))]
+response_table <- sub_goby[,list(N=.N,freq=sum(Response)),by=list(Flow_Level,Stimulus_Direction)]
+response_table[,Percent_Responding:=freq/N]
+@
+
+Compute the overall frequency of response
+
+<<>>=
+# (unweighted) overall frequency of response (not the mean by class). These are both the same
+sub_goby[,list(overall_f=mean(Response))]
+response_table[,list(overall_f=sum(freq)/sum(N))]
+# (weighted) overall frequency (mean of frequencies by class)
+response_table[,list(overall_f=mean(freq/N))]
+@
+The overall rate of resonse is 0.77. 
+
+@
+
+Explore P-values in Type I SS ANOVA table.
+
+<<>>=
+fit1 <- glm(Response~Fineness*Stimulus_Direction*Flow_Level,family=binomial(link='logit'),data=sub_goby)
+fit2 <- glm(Response~Fineness*Stimulus_Direction*Flow_Level - Fineness:Stimulus_Direction:Flow_Level,family=binomial(link='logit'),data=sub_goby)
+anova(fit1,fit2,test="Chisq")
+anova(fit1,test="Chisq")
+@
+
+The results suggests that the 3-way interaction is perhaps not ignorable, that is fineness has no consistent effect across Stimulus Direction and Flow Level.
+
+Analyze all models and compare using AIC and pseudo-$R^2$
+
+<<>>=
+# use this for all_models_glm
+setNames(sub_goby,short_names)
+#  sub_goby[,Fineness:=scale(Fineness)]
+all_models_glm(sub_goby)
+@
+
+This suggests focussing on the model FL + SD + FL:SD to estimate effect sizes. Recreate subset without Fineness.
+<<>>=
+# also note there are two more observations in this data since FR is removed
+sub_goby <- na.omit(goby[,list(Response,Stimulus_Direction,Flow_Level)])
+# descriptive stats
+@
+
+We want to create a plot showing the response as a function of Flow Level, Stimulus Direction and their interaction. Start by creating a response table, which shows the frequency of response as a function of Flow Level X Stimulus Direction, and compute the overall response as the mean ignoring cells and as the weighted mean of the cells.
+
+Fit the factorial and additive models 
+<<>>=
+# now make Response a factor!
+sub_goby[,Response:=factor(Response)]
+# compare full factorial vs. additive models
+# result is the full model is necessary
+# P interaction is .001488
+fit1 <- glm(Response~Stimulus_Direction*Flow_Level,family=binomial(link='logit'),data=sub_goby)
+fitR <- glm(Response~Flow_Level*Stimulus_Direction,family=binomial(link='logit'),data=sub_goby)
+fit2 <- glm(Response~Stimulus_Direction+Flow_Level,family=binomial(link='logit'),data=sub_goby)
+anova(fit1,fit2,test="Chisq")
+anova(fit1,test="Chisq") # note same P-value
+@
+ 
+Explore the fit with a figure, but using the lsmip function
+<<>>=
+# exploratory figure of response frequency
+lsmip(fit1,Flow_Level~Stimulus_Direction,type='response') # compare this to the response_table above
+@
+
+Estimate effect sizes and confidence intervals
+<<>>=
+# get lsmeans and 95% CI from glm model.
+glm_lsmeans <- lsmeans(fit1,~Flow_Level|Stimulus_Direction)
+glm_lsmeans
+@
+
+Create a table of effect size and confidence interval using lsmeans package. Ultimately I cannot figure out how to access the return values so I replace this below using the glm package and base R commands
+<<>>=
+# I don't know how to access these means other than manually inputing into a text file and
+reading in that! So, output these results and edit to readable table: lsmean_table_response.txt
+glm_lsmeans_table <- data.table(read.table('lsmean_table_response.txt',header=TRUE,sep='\t'))
+glm_lsmeans_table[,lsmean:=expit(lsmean)]
+glm_lsmeans_table[,asymp.LCL:=expit(asymp.LCL)]
+glm_lsmeans_table[,asymp.UCL:=expit(asymp.UCL)]
+my_table <- merge(response_table,glm_lsmeans_table,by=c('Stimulus_Direction','Flow_Level'))
+my_table
+@
+
+Create a table of effect size and confidence intervals using glm and base R commands
+<<>>=
+yhat.test <- predict(fit1, se.fit=TRUE)
+yhat <- predict(fit1, type="link", se.fit=TRUE)
+head(yhat.test$fit)
+head(yhat$fit)
+head(yhat.test$se)
+head(yhat$se)  # not sure what "link" does since the return values are the same
+
+crit_val <- 1.96 ## approx 95% CI
+upr <- yhat$fit + (crit_val * yhat$se.fit)
+lwr <- yhat$fit - (crit_val * yhat$se.fit)
+sub_goby[,yhat:=yhat$fit]
+sub_goby[,upr:=upr]
+sub_goby[,lwr:=lwr]
+predict_table <- sub_goby[,list(yhat=mean(expit(y_hat)),lwr=mean(expit(lwr)),upr=mean(expit(upr))),by=list(Flow_Level,Stimulus_Direction)]
+# check same as lsmeans
+
+# by hand
+coef <- coefficients(fit1)
+ci <- confint(fit1)
+# based on effects, create treatment columns. Don't know how to do this except manually
+ci_table <- data.table(effect=row.names(ci),coef=coef,ci)
+
+# compare to lsmeans
+coeff.lateral.low <- 2.1972246 + (-.9734491) + (-0.9734491) + (-.12516)
+expit(coeff.lateral.low) # check
+lower.lateral.low <- (-2.2269572)
+expit(lower.lateral.low) # no
+@
+
+Use the base R result (equivalent to the lsmeans result but I don't have to create parts by hand) to plot and save as a figure
+<<>>=
+# plot with 95% CI
+ref <- 0 # set to 1 for "failure to respond" or zero for "respond"
+pd <- position_dodge(.3)  
+gg1 <- ggplot(data=predict_table,aes(x=Stimulus_Direction,y=abs(ref-yhat),shape=Flow_Level, group=Flow_Level))
+gg1 <- gg1 + geom_errorbar(aes(ymin=abs(ref-lwr), ymax=abs(ref-upr)), width=.3, position=pd, color="gray70")
+gg1 <- gg1 + geom_line(position=pd,color='black')
+gg1 <- gg1 + geom_point(position=pd,size=3,color='black')
+if(ref==1){
+  gg1 <- gg1 + scale_y_continuous(name='Frequency of Failed Response')    
+}else{
+  gg1 <- gg1 + scale_y_continuous(name='Frequency of Response')    
+}
+gg1 <- gg1 + scale_x_discrete(name='Stimulus Direction')
+#gg1 <- gg1 + ggtitle('A')
+gg1 <- gg1 + theme_bw()
+gg1 <- gg1 + theme(plot.margin=unit(x=c(0.1,0.1,0.1,0.1),'cm'),text=element_text(size=9),plot.title=element_text(hjust=0),legend.position=c('right'))
+gg1 # change symbols to reflect group and errorbars = gray
+gg1
+
+# save gg1 as FigJAW01
+fig_name <- 'FigJAW01.pdf'
+w <- 3.5
+h <- 3
+pdf(fig_name,paper='special',onefile=FALSE,width=w,height=h)
+print(gg1)
+dev.off()
+@
+
+loglinear exploration
+<<>>=
+
+# log-linear analyses
+ctable <- table(sub_goby)
+ftable <- as.data.frame(ctable)
+# using glm
+fit1 <- glm(Freq ~ Response*Stimulus_Direction*Flow_Level, data=ftable, family=poisson)
+fit2 <- glm(Freq ~ Response*Stimulus_Direction+Flow_Level, data=ftable, family=poisson)
+
+# note the Likelihood Ratio P value is the same as the logistic regression above
+loglm(~Response*Stimulus_Direction*Flow_Level,data=ctable)
+loglm(~Response*Stimulus_Direction*Flow_Level - Response:Stimulus_Direction:Flow_Level,data=ctable)
+
+mosaicplot(ctable, shade=T) 
+
+@
+
+
+\subsection{Analyze Escape Angle}
+
+First, subset the data to that with no missing values for the relevant variables, including Fineness Ratio.
+
+<< Analyze Escape Angle>>=
+sub_goby <- na.omit(goby[,list(Escape_Angle,Stimulus_Direction,Flow_Level,Fineness)])
+full_names <- colnames(sub_goby)
+short_names <- c('Y','SD','FL','FR') # make sure in same order as full_names!
+@
+
+Summary statistics
+<<>>=
+# means by cell
+means_table <- sub_goby[,list(mean_angle=mean(Escape_Angle,na.rm=TRUE)),by=list(Flow_Level,Stimulus_Direction)]
+# cell with minimum escape angle
+means_table[mean_angle==min(means_table[,mean_angle]),]
+# cell with maximum escape angle
+means_table[mean_angle==max(means_table[,mean_angle]),]
+# unweighted mean of cell means ignoring unbalanced
+mean(means_table[,mean_angle])
+# weighted mean of cells by N = mean ignoring group structure
+sub_goby[,list(mean=mean(Escape_Angle,na.rm=TRUE))] # grand mean
+
+@
+
+Do variable-selection
+<< >>=
+setnames(sub_goby,short_names)
+all_models_lm(sub_goby)
+@
+SD alone is the best model. Adding FR trivially drops adjusted $R2$ and the P-value is .33 yet $\Delta$AIC is only 1.0. The model with all main effects plus the FL $\times$ FR interaction is a reasonable candidate model ($\Delta$AIC = 1.7, $R^2=.12) and the interaction is statistically significant (P = .042).
+
+Use the model 6 graph (FL + SD) to show the SD but not FL effect and no interaction. Add comments on model 2, at least and maybe 3.
+
+<<>>=
+# sub_data has two more rows than sub_goby analyzed above because of the two observations with missing fineness
+sub_goby <- na.omit(goby[,list(Escape_Angle,Stimulus_Direction,Flow_Level)])
+sum_table <- sub_goby[,list(N=.N,ybar=mean(Escape_Angle),ysd=sd(Escape_Angle)),by=list(Stimulus_Direction,Flow_Level)]
+sum_table[,se:=ysd/sqrt(N)]
+sum_table[,tcrit:=qt(0.975, df= N-1)]
+sum_table[,ci:=se*tcrit]
+
+pd <- position_dodge(0.25)
+gg1 <- ggplot(data=sum_table,aes(x=Stimulus_Direction,y=ybar,color=Flow_Level, group=Flow_Level))
+gg1 <- gg1 + geom_errorbar(aes(ymin=ybar-ci, ymax=ybar+ci), width=1, position=pd)
+gg1 <- gg1 + geom_line(position=pd)
+gg1 <- gg1 + geom_point(position=pd,size=3)
+gg1 <- gg1 + scale_y_continuous(name='Escape Angle')
+gg1 <- gg1 + scale_x_discrete(name='Stimulus Direction')
+#gg1 <- gg1 + ggtitle('A')
+gg1 <- gg1 + theme(plot.margin=unit(x=c(0.1,0.1,0.1,0.1),'cm'),text=element_text(size=9),plot.title=element_text(hjust=0),legend.position=c('right'))
+gg1
+
+#save gg1 as FigJAW03
+fig_name <- 'Fig.JAW02.pdf'
+w <- 3.5
+h <- 2.5
+pdf(fig_name,paper='special',onefile=FALSE,width=w,height=h)
+print(gg1)
+dev.off()
+}
+
+@
+
+
+<<>>=
+
+
+# first a variable selection approach
+sub_goby <- goby[,list(Y=Escape_Angle,FL=Flow_Level,SD=Stimulus_Direction,FR=Fineness)]
+sub_goby <- na.omit(sub_goby) # insure same same n in all tests, AIC is a function of n so cannot meaningfully compare models with different n
+var_sel_table <- all_models_lm(sub_goby)
+# stimulus direction is driving much of adj R2. FL*FR is about 0.05 in any of the models including it. The minimal model with this interaction is ~SD + FL*FR, which has deltaAIC < 2. This suggests looking at effect of FR*FL on escape angle using standardized variables
+sub_goby[,Y.s:=scale(Y)]
+sub_goby[,FR.s:=scale(FR)]
+fit1.s <- lm(Y.s~SD+FL*FR.s,data=sub_goby) # standardized
+fit1 <- lm(Y~SD+FL*FR,data=sub_goby)
+summary(fit1)
+coef <- data.frame(coef=coefficients(fit1)[6:8])
+conf <- data.frame(confint(fit1)[6:8,])
+coef_table <- cbind(coef,conf)
+coef_table[2:3,] <- coef[1,'coef']+coef_table[2:3,]
+row.names(coef_table) <- levels(sub_goby[,FL])
+colnames(coef_table) <- c('Estimate','2.5%','97.5%')
+round(coef_table,2)
+# in no flow, finer fish escape more downstream (10.6° for each unit fineness) in no flow. IN a flow, finer fish escape less downstream.
+
+# plots
+# the main thing to show is the effect of stimulus direction but not flow level on escape angle. This is the lowest AIC model
+pd <- position_dodge(0.25)
+# sub_data has two more rows than sub_goby analyzed above because of the two observations with missing fineness
+sub_data <- na.omit(goby[,list(Escape_Angle,Stimulus_Direction,Flow_Level)])
+sum_table <- sub_data[,list(N=.N,ybar=mean(Escape_Angle),ysd=sd(Escape_Angle)),by=list(Stimulus_Direction,Flow_Level)]
+sum_table[,se:=ysd/sqrt(N)]
+sum_table[,tcrit:=qt(0.975, df= N-1)]
+sum_table[,ci:=se*tcrit]
+
+gg1 <- ggplot(data=sum_table,aes(x=Stimulus_Direction,y=ybar,color=Flow_Level, group=Flow_Level))
+gg1 <- gg1 + geom_errorbar(aes(ymin=ybar-ci, ymax=ybar+ci), width=1, position=pd)
+gg1 <- gg1 + geom_line(position=pd)
+gg1 <- gg1 + geom_point(position=pd,size=3)
+gg1 <- gg1 + scale_y_continuous(name='Escape Angle')
+gg1 <- gg1 + scale_x_discrete(name='Stimulus Direction')
+#gg1 <- gg1 + ggtitle('A')
+gg1 <- gg1 + theme(plot.margin=unit(x=c(0.1,0.1,0.1,0.1),'cm'),text=element_text(size=9),plot.title=element_text(hjust=0),legend.position=c('right'))
+gg1
+
+#save gg1 as FigJAW03
+fig_name <- 'Fig.JAW03.pdf'
+w <- 3.5
+h <- 2.5
+pdf(fig_name,paper='special',onefile=FALSE,width=w,height=h)
+print(gg1)
+dev.off()
+}
+
+Analyze_Acceleration <- function(goby){
+  # Velocity
+  sub_goby <- na.omit(goby[,list(Y=Vel_max,Flow_Level,Stimulus_Direction,Fineness)])
+  summary(sub_goby)
+  sd(sub_goby[,Y])
+  vec_table <- stat_table_3_way(sub_goby)
+  max_in <- max(vec_table[,adj_R2])
+  mean_in <- mean(vec_table[,adj_R2])
+  # nothing worth pursuing because of very low R2
+  # how probable is the set of R^2s in 3 factor random data with same inbalance as observed data?
+  Random_3_factor_model(sub_goby,max_in,mean_in,niter=2500)
+  # $P_max_out = 0.3728, P_mean_out 0.4864
+  
+  
+  # Accel
+  sub_goby <- na.omit(goby[,list(Y=Accel_max,Flow_Level,Stimulus_Direction,Fineness)])
+  summary(sub_goby)
+  sd(sub_goby[,Y])
+  acc_table <- stat_table_3_way(sub_goby)
+  max_in <- max(acc_table[,adj_R2])
+  mean_in <- mean(acc_table[,adj_R2])
+  # how probable is the set of R^2s in 3 factor random data with same inbalance as observed data?
+  Random_3_factor_model(sub_goby,max_in,mean_in,niter=2500)
+  # Probability of obs R^2 in random data: P_max = .073, P_mean = .031
+  
+  # Stimulus_Direction*Fineness model
+  fit1 <- lm(Y~Stimulus_Direction*Fineness,data=sub_goby)
+  sub_goby[,yhat1:=predict(fit1)]
+  gg1 <- ggplot(data=sub_goby,aes(x=Fineness,y=Y/100,color=Stimulus_Direction))
+  gg1 <- gg1 + geom_point()
+  gg1 <- gg1 + geom_line(aes(y = yhat1/100))
+  gg1 <- gg1 + scale_y_continuous(name='Acceleration (cm/s/s)')
+  gg1 <- gg1 +theme(plot.margin=unit(x=c(0.1,0.1,0.1,0.1),'cm'),text=element_text(size=9),plot.title=element_text(hjust=0),legend.position=c('right'))
+  gg1
+  
+  # save gg1 as FigJAW03
+  fig_name <- 'FigJAW03.pdf'
+  w <- 3.5
+  h <- 2.5
+  pdf(fig_name,paper='special',onefile=FALSE,width=w,height=h)
+  print(gg1)
+  dev.off()
+  
+  
+  # stats to go with gg1
+  sub_goby[,Y.s:=scale(Y)]
+  sub_goby[,Fineness.s:=scale(Fineness)]
+  fit1.s <- lm(Y.s~Stimulus_Direction * Fineness.s,data=sub_goby)
+  coef <- data.table(coef=coefficients(fit1.s)[4:6])
+  conf <- data.table(confint(fit1.s)[4:6,])
+  coef_table <- cbind(coef,conf)
+  coef_table[2:3,] <- coef[1,coef]+coef_table[2:3,]
+  round(coef_table,2)
+  #        coef  2.5 %   97.5 %
+  # cranial: 0.53  0.20   0.85
+  # lateral : 0.21 -0.23   0.66
+  # caudal : 0.07 -0.33   0.48
+  
+  
+  # Stimulus_Direction+Fineness model
+  fit2 <- lm(Y~Stimulus_Direction+Fineness,data=sub_goby)
+  sub_goby[,yhat2:=predict(fit2)]
+  gg2 <- ggplot(data=sub_goby,aes(x=Fineness,y=Y/100,color=Stimulus_Direction))
+  gg2 <- gg2 + geom_point()
+  gg2 <- gg2 + geom_line(aes(y = yhat2/100))
+  gg2 <- gg2 + scale_y_continuous(name='Acceleration (cm/s)')
+  gg2 <- gg2 +theme(plot.margin=unit(x=c(0.1,0.1,0.1,0.1),'cm'),text=element_text(size=9),plot.title=element_text(hjust=0),legend.position=c('right'))
+  gg2
+  
+  # stats to go with gg2
+  fit2.s <- lm(Y.s~Stimulus_Direction + Fineness.s,data=sub_goby)
+  coef <- coefficients(fit2.s)[4]
+  conf <- confint(fit2.s)[4,]
+  # > coef
+  # Fineness.s 
+  # 0.229833 
+  # > conf
+  # 2.5 %     97.5 % 
+  # 0.06413114 0.39553484 
+}
+
+@
+
+\subsection{Analyze Velocity and Acceleration}
+
+<< analyze Velocity and Acceleration >>=
+
+@
+
+
+
+
+\end{document}
