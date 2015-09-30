@@ -10,25 +10,37 @@
 
 \begin{document}
 
+\section{github}
+The steps to maintain these scripts at GitHub are
+\begin{enumerate}
+\item Create a new repository at GitHub. Be sure to add the MIT license
+\item Copy the SSH clone URL, which is git@github.com:middleprofessor/Goby.git
+\item Create a new project in R studio using New Project > Version Control
+\item Paste in the GitHub SSH clone URL
+\item done!
+\end{enumerate}
+
 \section{Load libraries}
 The main data libraries are data.table and ggplot2
 << libraries >>=
 library(data.table)
 library(ggplot2)
+library(grid) # necessary for ggplot2
 library(gridExtra) #grid.arrange
 library(doBy)
 library(lsmeans) # lsmeans
 library(car) # Anova (type III ss)
 library(pscl) # R^2 for glm
+library(arm) # display function
 @
 
 \section{Create working data.table}
 \subsection{Pre-processing steps}
 \begin{enumerate}
-\item Saved the sheet "overall" in the .xlxs file "Goby lab notebook 18August15_cleaned up.xlsx" to a tab-delimited text file "goby_data.txt".
-\item Two values in the Fineness Ratio column contained '#DIV/0!' - these were changed to NA.
+\item Saved the sheet "overall" in the .xlxs file "Goby lab notebook 18August15\_cleaned up.xlsx" to a tab-delimited text file "goby\_data.txt".
+\item Two values in the Fineness Ratio column contained Div by 0 errors - these were changed to NA.
 \item The missing values were left as is (not changed to NA).
-\item The column headers were changed to "ID  Response	Escape_Angle	Attack_Angle	Flow	Direction	Fineness	Vel_max	Accel_max"
+\item The column headers were changed to "ID  Response	Escape\_Angle	Attack\_Angle	Flow	Direction	Fineness	Vel\_max	Accel\_max"
 \end{enumerate}
 
 \subsection{Read and clean data}
@@ -260,7 +272,7 @@ Analyze all models and compare using AIC and pseudo-$R^2$
 
 <<>>=
 # use this for all_models_glm
-setNames(sub_goby,short_names)
+sub_goby <- setNames(sub_goby,short_names)
 #  sub_goby[,Fineness:=scale(Fineness)]
 all_models_glm(sub_goby)
 @
@@ -304,7 +316,7 @@ glm_lsmeans
 Create a table of effect size and confidence interval using lsmeans package. Ultimately I cannot figure out how to access the return values so I replace this below using the glm package and base R commands
 <<>>=
 # I don't know how to access these means other than manually inputing into a text file and
-reading in that! So, output these results and edit to readable table: lsmean_table_response.txt
+# reading in that! So, output these results and edit to readable table: lsmean_table_response.txt
 glm_lsmeans_table <- data.table(read.table('lsmean_table_response.txt',header=TRUE,sep='\t'))
 glm_lsmeans_table[,lsmean:=expit(lsmean)]
 glm_lsmeans_table[,asymp.LCL:=expit(asymp.LCL)]
@@ -395,40 +407,36 @@ mosaicplot(ctable, shade=T)
 
 \subsection{Analyze Escape Angle}
 
-First, subset the data to that with no missing values for the relevant variables, including Fineness Ratio.
-
+First compute Summary statistics using observations with complete Stimulus Direction + Flow Level data
 << Analyze Escape Angle>>=
-sub_goby <- na.omit(goby[,list(Escape_Angle,Stimulus_Direction,Flow_Level,Fineness)])
-full_names <- colnames(sub_goby)
-short_names <- c('Y','SD','FL','FR') # make sure in same order as full_names!
-@
-
-Summary statistics
-<<>>=
 # means by cell
-means_table <- sub_goby[,list(mean_angle=mean(Escape_Angle,na.rm=TRUE)),by=list(Flow_Level,Stimulus_Direction)]
+means_table <- goby[,list(mean_angle=mean(Escape_Angle,na.rm=TRUE)),by=list(Flow_Level,Stimulus_Direction)]
 # cell with minimum escape angle
 means_table[mean_angle==min(means_table[,mean_angle]),]
 # cell with maximum escape angle
 means_table[mean_angle==max(means_table[,mean_angle]),]
-# unweighted mean of cell means ignoring unbalanced
+# unweighted mean of cell means ignoring unbalanced cells
 mean(means_table[,mean_angle])
-# weighted mean of cells by N = mean ignoring group structure
-sub_goby[,list(mean=mean(Escape_Angle,na.rm=TRUE))] # grand mean
+# weighted mean of cells by N = mean ignoring group structure, use this mean
+goby[,list(mean=mean(Escape_Angle,na.rm=TRUE))] # grand mean
 
 @
 
-Do variable-selection
+Do variable-selection using subset of goby with complete observations for Stimulus Direction + Flow Level + Fineness (two fewer observations than above)
 << >>=
+# subset the data to that with no missing values for the relevant variables, including Fineness Ratio.
+sub_goby <- na.omit(goby[,list(Escape_Angle,Stimulus_Direction,Flow_Level,Fineness)])
+full_names <- colnames(sub_goby)
+short_names <- c('Y','SD','FL','FR') # make sure in same order as full_names!
 setnames(sub_goby,short_names)
 all_models_lm(sub_goby)
 @
-SD alone is the best model. Adding FR trivially drops adjusted $R2$ and the P-value is .33 yet $\Delta$AIC is only 1.0. The model with all main effects plus the FL $\times$ FR interaction is a reasonable candidate model ($\Delta$AIC = 1.7, $R^2=.12) and the interaction is statistically significant (P = .042).
+SD alone is the best model. Adding FR trivially drops adjusted $R^2$ and the P-value is .33 yet $\Delta$AIC is only 1.0. The model with all main effects plus the FL $\times$ FR interaction is a reasonable candidate model ($\Delta$AIC = 1.7, $R^2=.12$) and the interaction is statistically significant (P = .042).
 
 Use the model 6 graph (FL + SD) to show the SD but not FL effect and no interaction. Add comments on model 2, at least and maybe 3.
 
 <<>>=
-# sub_data has two more rows than sub_goby analyzed above because of the two observations with missing fineness
+# subset the data not including Fineness. This will have two more rows than the data used for the variable selection analysis above because of the two observations with missing fineness
 sub_goby <- na.omit(goby[,list(Escape_Angle,Stimulus_Direction,Flow_Level)])
 sum_table <- sub_goby[,list(N=.N,ybar=mean(Escape_Angle),ysd=sd(Escape_Angle)),by=list(Stimulus_Direction,Flow_Level)]
 sum_table[,se:=ysd/sqrt(N)]
@@ -446,159 +454,130 @@ gg1 <- gg1 + scale_x_discrete(name='Stimulus Direction')
 gg1 <- gg1 + theme(plot.margin=unit(x=c(0.1,0.1,0.1,0.1),'cm'),text=element_text(size=9),plot.title=element_text(hjust=0),legend.position=c('right'))
 gg1
 
-#save gg1 as FigJAW03
+#save gg1 as FigJAW02
 fig_name <- 'Fig.JAW02.pdf'
 w <- 3.5
 h <- 2.5
 pdf(fig_name,paper='special',onefile=FALSE,width=w,height=h)
 print(gg1)
 dev.off()
-}
+
 
 @
 
+Estimate Stimulus Direction effects ignoring Flow Level (and Fineness).
 
 <<>>=
+fit <- lm(Escape_Angle~Stimulus_Direction,data=sub_goby)
+display(fit) # get difference from cranial 
+confint(fit) # get 95% CI on difference from cranial
+@
+
+Fish stimulated cranially increase escape angle by 24.4 (95$\%$ CI: 10.4 - 38.3) relative to laterally stimulated and 25.0 (95$\%$ CI: 12.1 = 37.8) relative to  caudally stimulated fish.
+
+Now explore the Flow Level by Fineness Ratio effect. Need to remove observations with missig fineness
+<<>>=
+sub_goby <- na.omit(goby[,list(Escape_Angle,Stimulus_Direction,Flow_Level,Fineness)])
+fit <- lm(Escape_Angle~Stimulus_Direction+Flow_Level+Fineness+Flow_Level*Fineness,data=sub_goby)
+display(fit)
+coefs <- display(fit)$coef[6:8]
+slopes <- coefs
+slopes[2:3] <- coefs[2:3]+coefs[1]
+ci.coef <- confint(fit)[6:8,]
+ci.slope <- ci.coef
+ci.slope[2:3,] <- coefs[1] + ci.slope[2:3,]
+coef.table <- data.frame(coef=coefs,ci.coef)
+slope.table <- data.frame(slope=slopes,ci.slope)
+
+@
+The slopes are not statistically significant in any group. What is statistically signficant is the interaction, so that the slope in the low flow level is statistically significantly less than that in zero flow. So, how to report this (if at all), especially since the pattern is not super interpretable (or sure, I can make up an explanation but this requires handwaving for why the effect is non-linear. Or maybe just interpret it as, when there is a flow, the effect of fineness becomes more negative)
 
 
-# first a variable selection approach
-sub_goby <- goby[,list(Y=Escape_Angle,FL=Flow_Level,SD=Stimulus_Direction,FR=Fineness)]
-sub_goby <- na.omit(sub_goby) # insure same same n in all tests, AIC is a function of n so cannot meaningfully compare models with different n
-var_sel_table <- all_models_lm(sub_goby)
-# stimulus direction is driving much of adj R2. FL*FR is about 0.05 in any of the models including it. The minimal model with this interaction is ~SD + FL*FR, which has deltaAIC < 2. This suggests looking at effect of FR*FL on escape angle using standardized variables
-sub_goby[,Y.s:=scale(Y)]
-sub_goby[,FR.s:=scale(FR)]
-fit1.s <- lm(Y.s~SD+FL*FR.s,data=sub_goby) # standardized
-fit1 <- lm(Y~SD+FL*FR,data=sub_goby)
-summary(fit1)
-coef <- data.frame(coef=coefficients(fit1)[6:8])
-conf <- data.frame(confint(fit1)[6:8,])
-coef_table <- cbind(coef,conf)
-coef_table[2:3,] <- coef[1,'coef']+coef_table[2:3,]
-row.names(coef_table) <- levels(sub_goby[,FL])
-colnames(coef_table) <- c('Estimate','2.5%','97.5%')
-round(coef_table,2)
-# in no flow, finer fish escape more downstream (10.6° for each unit fineness) in no flow. IN a flow, finer fish escape less downstream.
+Adjusting for Stimulus Direction, Escape Angle increases 10.6° per unit Fineness when Flow Level is zero, -15.0° per unit Fineness when Flow level is low and -4.7° per unit Fineness when Flow level is moderate. The standard errors for these effects. Another (better?) way to state this since it's the interaction is: Relative to the zero flow condition, the effect of Fineness on Escape Angle decreases 25.6° per unit Fineness (95$\%$ CI: 5.6 - 45) in the low flow treatment and decreases 15.3° per unit Fineness (95$\%s$ CI: -5.6 - 36.2) in the high flow treatment.
 
-# plots
-# the main thing to show is the effect of stimulus direction but not flow level on escape angle. This is the lowest AIC model
-pd <- position_dodge(0.25)
-# sub_data has two more rows than sub_goby analyzed above because of the two observations with missing fineness
-sub_data <- na.omit(goby[,list(Escape_Angle,Stimulus_Direction,Flow_Level)])
-sum_table <- sub_data[,list(N=.N,ybar=mean(Escape_Angle),ysd=sd(Escape_Angle)),by=list(Stimulus_Direction,Flow_Level)]
-sum_table[,se:=ysd/sqrt(N)]
-sum_table[,tcrit:=qt(0.975, df= N-1)]
-sum_table[,ci:=se*tcrit]
+Or another way. Adjusting for Stimulus Direction, Escape Angle increases 10.6° per unit Fineness when Flow Level is zero. In the low flow condition, the Fineness effect decreases 25.6° per unit Fineness (95$\%$ CI: 5.6 - 45) from the zero. In the high flow condition, the Fineness effect decreases 15.3° per unit Fineness (95$\%$ CI: -5.6 - 36.2)
 
-gg1 <- ggplot(data=sum_table,aes(x=Stimulus_Direction,y=ybar,color=Flow_Level, group=Flow_Level))
-gg1 <- gg1 + geom_errorbar(aes(ymin=ybar-ci, ymax=ybar+ci), width=1, position=pd)
-gg1 <- gg1 + geom_line(position=pd)
-gg1 <- gg1 + geom_point(position=pd,size=3)
-gg1 <- gg1 + scale_y_continuous(name='Escape Angle')
-gg1 <- gg1 + scale_x_discrete(name='Stimulus Direction')
-#gg1 <- gg1 + ggtitle('A')
+\subsection{Analyze Velocity}
+Subset the data and get mean velocity by cell and grand mean
+<< analyze Velocity >>=
+sub_goby <- na.omit(goby[,list(Vel_max,Stimulus_Direction,Flow_Level)])
+# grand mean
+sub_goby[,list(grand_mean=mean(Vel_max))]
+# cell means
+sub_goby[,list(grand_mean=mean(Vel_max)),by=list(Stimulus_Direction,Flow_Level)]
+@
+
+What is reported will be determined by the variable selection analysis. So do variable selection
+<<>>=
+sub_goby <- na.omit(goby[,list(Vel_max,Stimulus_Direction,Flow_Level,Fineness)])
+full_names <- colnames(sub_goby)
+short_names <- c('Y','SD','FL','FR') # make sure in same order as full_names!
+setnames(sub_goby,short_names)
+all_models_lm(sub_goby)
+@
+The model with the highest adjusted $R^2$ (0.03) has the lowest delta AIC! Regardless, there is nothing to interpret here. There is too much noise to get good estimates of the small effects.
+
+So for the results, just report the grand mean velocity. No combination of Stimulus Direction, Flow Level, and Fineness Ratio explained more than $3\%$ of the variance in Maximum Escape Velocity (so not worth reporting on the top AIC model)
+
+\subsection{Analyze Acceleration}
+Subset the data and get mean max Acceleration by cell and grand mean
+<< analyze Acceleration >>=
+sub_goby <- na.omit(goby[,list(Accel_max,Stimulus_Direction,Flow_Level)])
+# grand mean
+sub_goby[,list(grand_mean=mean(Accel_max))]
+# cell means
+sub_goby[,list(grand_mean=mean(Accel_max)),by=list(Stimulus_Direction,Flow_Level)]
+@
+The grand mean acceleration is 79.6 $m s^2$. 
+
+What is reported will be determined by the variable selection analysis. So do variable selection
+<<>>=
+sub_goby <- na.omit(goby[,list(Accel_max,Stimulus_Direction,Flow_Level,Fineness)])
+full_names <- colnames(sub_goby)
+short_names <- c('Y','SD','FL','FR') # make sure in same order as full_names!
+setnames(sub_goby,short_names)
+all_models_lm(sub_goby)
+@
+The lowest AIC model is SD*FR and the P-value of the interaction is 0.093, so perhaps not ignorable. The 2nd lowest AIC model is the additive model (SD + FR) and the p-value for the FR effect is 0.007. The 3rd and 4 best models also include the SD:FR interaction and both with smallish P-values. This suggests reporting the effect sizes including the interaction and showing an interaction plot.
+
+Note that as we go from a model with FR to SD + FR to SD*FR the adjusted $R^2$ rises from .035 to .056 to .075.
+
+<<>>=
+sub_goby <- na.omit(goby[,list(Y=Accel_max,Stimulus_Direction,Flow_Level,Fineness)])
+
+# Stimulus_Direction*Fineness model
+fit <- lm(Y~Stimulus_Direction*Fineness,data=sub_goby)
+sub_goby[,yhat1:=predict(fit)]
+gg1 <- ggplot(data=sub_goby,aes(x=Fineness,y=Y/100,color=Stimulus_Direction))
+gg1 <- gg1 + geom_point()
+gg1 <- gg1 + geom_line(aes(y = yhat1/100))
+gg1 <- gg1 + scale_y_continuous(name='Acceleration (cm/s/s)')
 gg1 <- gg1 + theme(plot.margin=unit(x=c(0.1,0.1,0.1,0.1),'cm'),text=element_text(size=9),plot.title=element_text(hjust=0),legend.position=c('right'))
 gg1
 
-#save gg1 as FigJAW03
-fig_name <- 'Fig.JAW03.pdf'
+# save gg1 as FigJAW03
+fig_name <- 'FigJAW03.pdf'
 w <- 3.5
-h <- 2.5
+h <- 3
 pdf(fig_name,paper='special',onefile=FALSE,width=w,height=h)
 print(gg1)
 dev.off()
-}
-
-Analyze_Acceleration <- function(goby){
-  # Velocity
-  sub_goby <- na.omit(goby[,list(Y=Vel_max,Flow_Level,Stimulus_Direction,Fineness)])
-  summary(sub_goby)
-  sd(sub_goby[,Y])
-  vec_table <- stat_table_3_way(sub_goby)
-  max_in <- max(vec_table[,adj_R2])
-  mean_in <- mean(vec_table[,adj_R2])
-  # nothing worth pursuing because of very low R2
-  # how probable is the set of R^2s in 3 factor random data with same inbalance as observed data?
-  Random_3_factor_model(sub_goby,max_in,mean_in,niter=2500)
-  # $P_max_out = 0.3728, P_mean_out 0.4864
-  
-  
-  # Accel
-  sub_goby <- na.omit(goby[,list(Y=Accel_max,Flow_Level,Stimulus_Direction,Fineness)])
-  summary(sub_goby)
-  sd(sub_goby[,Y])
-  acc_table <- stat_table_3_way(sub_goby)
-  max_in <- max(acc_table[,adj_R2])
-  mean_in <- mean(acc_table[,adj_R2])
-  # how probable is the set of R^2s in 3 factor random data with same inbalance as observed data?
-  Random_3_factor_model(sub_goby,max_in,mean_in,niter=2500)
-  # Probability of obs R^2 in random data: P_max = .073, P_mean = .031
-  
-  # Stimulus_Direction*Fineness model
-  fit1 <- lm(Y~Stimulus_Direction*Fineness,data=sub_goby)
-  sub_goby[,yhat1:=predict(fit1)]
-  gg1 <- ggplot(data=sub_goby,aes(x=Fineness,y=Y/100,color=Stimulus_Direction))
-  gg1 <- gg1 + geom_point()
-  gg1 <- gg1 + geom_line(aes(y = yhat1/100))
-  gg1 <- gg1 + scale_y_continuous(name='Acceleration (cm/s/s)')
-  gg1 <- gg1 +theme(plot.margin=unit(x=c(0.1,0.1,0.1,0.1),'cm'),text=element_text(size=9),plot.title=element_text(hjust=0),legend.position=c('right'))
-  gg1
-  
-  # save gg1 as FigJAW03
-  fig_name <- 'FigJAW03.pdf'
-  w <- 3.5
-  h <- 2.5
-  pdf(fig_name,paper='special',onefile=FALSE,width=w,height=h)
-  print(gg1)
-  dev.off()
-  
-  
-  # stats to go with gg1
-  sub_goby[,Y.s:=scale(Y)]
-  sub_goby[,Fineness.s:=scale(Fineness)]
-  fit1.s <- lm(Y.s~Stimulus_Direction * Fineness.s,data=sub_goby)
-  coef <- data.table(coef=coefficients(fit1.s)[4:6])
-  conf <- data.table(confint(fit1.s)[4:6,])
-  coef_table <- cbind(coef,conf)
-  coef_table[2:3,] <- coef[1,coef]+coef_table[2:3,]
-  round(coef_table,2)
-  #        coef  2.5 %   97.5 %
-  # cranial: 0.53  0.20   0.85
-  # lateral : 0.21 -0.23   0.66
-  # caudal : 0.07 -0.33   0.48
-  
-  
-  # Stimulus_Direction+Fineness model
-  fit2 <- lm(Y~Stimulus_Direction+Fineness,data=sub_goby)
-  sub_goby[,yhat2:=predict(fit2)]
-  gg2 <- ggplot(data=sub_goby,aes(x=Fineness,y=Y/100,color=Stimulus_Direction))
-  gg2 <- gg2 + geom_point()
-  gg2 <- gg2 + geom_line(aes(y = yhat2/100))
-  gg2 <- gg2 + scale_y_continuous(name='Acceleration (cm/s)')
-  gg2 <- gg2 +theme(plot.margin=unit(x=c(0.1,0.1,0.1,0.1),'cm'),text=element_text(size=9),plot.title=element_text(hjust=0),legend.position=c('right'))
-  gg2
-  
-  # stats to go with gg2
-  fit2.s <- lm(Y.s~Stimulus_Direction + Fineness.s,data=sub_goby)
-  coef <- coefficients(fit2.s)[4]
-  conf <- confint(fit2.s)[4,]
-  # > coef
-  # Fineness.s 
-  # 0.229833 
-  # > conf
-  # 2.5 %     97.5 % 
-  # 0.06413114 0.39553484 
-}
 
 @
 
-\subsection{Analyze Velocity and Acceleration}
+It's not pretty (low $R^2$) but does show the interesting change in FR effect from cranial to lateral to caudal stimulus direction (is this an illusion of N=3?). We need to turn the graph into effect sizes
 
-<< analyze Velocity and Acceleration >>=
-
+<<>>=
+display(fit) # assuming fit was fit above
+confint(fit)
+coefs <- display(fit)$coef[4:6]
+slopes <- coefs
+slopes[2:3] <- coefs[2:3]+coefs[1]
+ci.coef <- confint(fit)[4:6,]
+ci.slope <- ci.coef
+ci.slope[2:3,] <- coefs[1] + ci.slope[2:3,]
+coef.table <- data.frame(coef=coefs,ci.coef)
+slope.table <- data.frame(slope=slopes,ci.slope)/100 # convert to m/s/s
 @
-
-
-
-
+Ignoring Flow Level, Max acceleration increases 25.5 ms$^2$ per unit Fineness in the cranially stimulated fish
 \end{document}
